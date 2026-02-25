@@ -118,6 +118,36 @@ def ensure_worksheets(spreadsheet):
             ]
         )
 
+    # Hoja de préstamos
+    try:
+        spreadsheet.worksheet("prestamos")
+    except WorksheetNotFound:
+        spreadsheet.add_worksheet(title="prestamos", rows=500, cols=15)
+        ws_prestamos = spreadsheet.worksheet("prestamos")
+        ws_prestamos.append_row(
+            [
+                "id",
+                "fecha",
+                "quien_presta",
+                "quien_recibe",
+                "monto",
+                "motivo",
+                "estado",
+                "monto_abonado",
+                "created_at",
+            ]
+        )
+
+    # Hoja de abonos a préstamos
+    try:
+        spreadsheet.worksheet("abonos_prestamos")
+    except WorksheetNotFound:
+        spreadsheet.add_worksheet(title="abonos_prestamos", rows=500, cols=10)
+        ws_abonos_p = spreadsheet.worksheet("abonos_prestamos")
+        ws_abonos_p.append_row(
+            ["id", "prestamo_id", "fecha", "monto", "nota", "created_at"]
+        )
+
     # Hoja de config
     try:
         ws_config = spreadsheet.worksheet("config")
@@ -204,6 +234,42 @@ def load_viajes_df() -> pd.DataFrame:
     for col in ["fecha_inicio", "fecha_fin"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+    return df
+
+
+@st.cache_data(ttl=30)
+def load_prestamos_df() -> pd.DataFrame:
+    """Carga todos los préstamos como DataFrame."""
+    ws = get_worksheet("prestamos")
+    records = ws.get_all_records()
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    df["id"] = pd.to_numeric(df.get("id", 0), errors="coerce").astype("Int64")
+    df["monto"] = pd.to_numeric(df.get("monto", 0.0), errors="coerce").fillna(0.0)
+    df["monto_abonado"] = pd.to_numeric(
+        df.get("monto_abonado", 0.0), errors="coerce"
+    ).fillna(0.0)
+    if "fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce").dt.date
+    return df
+
+
+@st.cache_data(ttl=30)
+def load_abonos_prestamos_df() -> pd.DataFrame:
+    """Carga todos los abonos a préstamos como DataFrame."""
+    ws = get_worksheet("abonos_prestamos")
+    records = ws.get_all_records()
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    df["id"] = pd.to_numeric(df.get("id", 0), errors="coerce").astype("Int64")
+    df["prestamo_id"] = pd.to_numeric(
+        df.get("prestamo_id", 0), errors="coerce"
+    ).astype("Int64")
+    df["monto"] = pd.to_numeric(df.get("monto", 0.0), errors="coerce").fillna(0.0)
+    if "fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce").dt.date
     return df
 
 
@@ -426,6 +492,97 @@ def cerrar_viaje(viaje_id: int, saldado: bool, balance_final: float) -> None:
     st.cache_data.clear()
 
 
+def add_prestamo(
+    fecha: date,
+    quien_presta: str,
+    quien_recibe: str,
+    monto: float,
+    motivo: str,
+) -> None:
+    """Registra un nuevo préstamo entre la pareja."""
+    ws = get_worksheet("prestamos")
+    next_id = _next_id_for_worksheet(ws)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row(
+        [
+            next_id,
+            str(fecha),
+            quien_presta,
+            quien_recibe,
+            float(monto),
+            motivo or "",
+            "activo",
+            0.0,
+            now,
+        ]
+    )
+    st.cache_data.clear()
+
+
+def add_abono_prestamo(prestamo_id: int, fecha: date, monto: float, nota: str) -> None:
+    """Registra un abono a un préstamo y actualiza monto_abonado y estado del préstamo."""
+    ws_abonos = get_worksheet("abonos_prestamos")
+    ws_prestamos = get_worksheet("prestamos")
+    next_id = _next_id_for_worksheet(ws_abonos)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws_abonos.append_row(
+        [next_id, int(prestamo_id), str(fecha), float(monto), nota or "", now]
+    )
+
+    row_index = _find_row_index_by_id(ws_prestamos, prestamo_id)
+    if row_index == -1:
+        st.cache_data.clear()
+        return
+    row_values = ws_prestamos.row_values(row_index)
+    while len(row_values) < 9:
+        row_values.append("")
+    try:
+        monto_total = float(row_values[4])
+        monto_abonado_prev = float(row_values[7]) if row_values[7] else 0.0
+    except (ValueError, IndexError):
+        monto_total = 0.0
+        monto_abonado_prev = 0.0
+    nuevo_abonado = monto_abonado_prev + float(monto)
+    if nuevo_abonado >= monto_total:
+        estado = "saldado"
+        nuevo_abonado = monto_total
+    else:
+        estado = "parcial"
+    row_values[6] = estado
+    row_values[7] = nuevo_abonado
+    ws_prestamos.update(
+        f"G{row_index}:H{row_index}",
+        [[row_values[6], row_values[7]]],
+    )
+    st.cache_data.clear()
+
+
+def calcular_balance_prestamos(
+    df_prestamos: pd.DataFrame, persona1: str, persona2: str
+) -> float:
+    """
+    Balance de préstamos: positivo = persona2 le debe a persona1.
+    Solo considera préstamos activos o parciales (saldo > 0).
+    """
+    if df_prestamos.empty or "quien_presta" not in df_prestamos.columns:
+        return 0.0
+    balance = 0.0
+    for _, row in df_prestamos.iterrows():
+        estado = (row.get("estado") or "").strip().lower()
+        if estado == "saldado":
+            continue
+        monto = float(row.get("monto", 0.0))
+        abonado = float(row.get("monto_abonado", 0.0))
+        saldo = monto - abonado
+        if saldo <= 0:
+            continue
+        if str(row.get("quien_presta", "")) == persona1:
+            balance += saldo
+        else:
+            balance -= saldo
+    return balance
+
+
 def calcular_balance(
     df_gastos: pd.DataFrame,
     df_pagos: pd.DataFrame,
@@ -564,16 +721,28 @@ def render_estado_cuenta_y_pagos(
 ) -> None:
     """Muestra el extracto de deuda y el formulario de abonos para una categoría."""
     st.markdown("### 📑 Estado de cuenta")
-    col_ec1, col_ec2, col_ec3 = st.columns(3)
-    col_ec1.metric("Deuda original", formatear_cop(resumen.get("deuda_original", 0.0)))
-    col_ec2.metric("Abonado", formatear_cop(resumen.get("abonos_aplicados", 0.0)))
-    col_ec3.metric("Saldo pendiente", formatear_cop(resumen.get("saldo_pendiente", 0.0)))
-
     deuda_original = float(resumen.get("deuda_original", 0.0) or 0.0)
     porcentaje_pagado = float(resumen.get("porcentaje_pagado", 0.0) or 0.0)
     saldo_pendiente = float(resumen.get("saldo_pendiente", 0.0) or 0.0)
     deudor = resumen.get("deudor")
     acreedor = resumen.get("acreedor")
+
+    st.write(f"**Deuda original:** {formatear_cop(deuda_original)}")
+    if not df_pagos_cat.empty and "fecha" in df_pagos_cat.columns and "monto" in df_pagos_cat.columns:
+        df_ord = df_pagos_cat.copy()
+        df_ord["fecha_dt"] = pd.to_datetime(df_ord["fecha"], errors="coerce")
+        df_ord = df_ord.sort_values("fecha_dt")
+        for i, (_, r) in enumerate(df_ord.iterrows(), 1):
+            f = r.get("fecha", "")
+            try:
+                f_short = pd.to_datetime(f).strftime("%d %b") if f else ""
+            except Exception:
+                f_short = str(f)[:10]
+            m = formatear_cop(r.get("monto", 0))
+            nota = (r.get("nota") or "") if isinstance(r.get("nota"), str) else ""
+            st.caption(f"Abono {i} ({f_short}): {m}" + (f" | {nota}" if nota else ""))
+    st.write(f"**Total abonado:** {formatear_cop(resumen.get('abonos_aplicados', 0.0))}")
+    st.markdown(f"**SALDO PENDIENTE:** <span style='color:#F59E0B;font-weight:700;'>{formatear_cop(saldo_pendiente)}</span>", unsafe_allow_html=True)
 
     progreso = porcentaje_pagado / 100.0 if deuda_original > 0 else 0.0
     st.progress(progreso, text=f"{porcentaje_pagado:,.1f}% pagado" if deuda_original > 0 else "Sin deuda")
@@ -622,6 +791,11 @@ def render_estado_cuenta_y_pagos(
             format="%.0f",
             key=f"monto_pago_{key_prefix}",
         )
+        metodo_pago = st.selectbox(
+            "Método de pago (opcional)",
+            ["", "Transferencia", "Nequi", "Daviplata", "Efectivo", "Otro"],
+            key=f"metodo_pago_{key_prefix}",
+        )
         nota = st.text_input("Nota (opcional)", key=f"nota_pago_{key_prefix}")
 
         submitted = st.form_submit_button("Registrar pago")
@@ -633,28 +807,50 @@ def render_estado_cuenta_y_pagos(
                 if monto <= 0:
                     st.error("El monto debe ser mayor a cero.")
                 else:
+                    nota_final = (f"{metodo_pago}: {nota}".strip() if metodo_pago else (nota or "")) or ""
                     add_pago(
                         fecha=fecha_pago,
                         quien_paga=quien_paga,
                         quien_recibe=quien_recibe,
                         monto=monto,
                         categoria=categoria,
-                        nota=nota,
+                        nota=nota_final,
                         viaje_id=viaje_id,
                     )
                     st.success("Pago registrado correctamente.")
                     st.rerun()
 
     st.markdown("### 🕒 Historial de pagos")
+    deudor = resumen.get("deudor")
+    acreedor = resumen.get("acreedor")
+    deuda_orig = float(resumen.get("deuda_original", 0.0) or 0.0)
+    if deuda_orig > 0 and deudor and acreedor:
+        st.caption(f"Se generó deuda de {formatear_cop(deuda_orig)}. {deudor} le debe a {acreedor}.")
     if df_pagos_cat.empty:
-        st.info("Aún no hay pagos registrados para esta categoría.")
+        if deuda_orig <= 0:
+            st.info("No hay pagos ni deuda en esta categoría.")
+        else:
+            st.info("Aún no hay pagos registrados para esta categoría.")
     else:
         df_hist = df_pagos_cat.copy()
         if "fecha" in df_hist.columns:
             df_hist["fecha_dt"] = pd.to_datetime(df_hist["fecha"], errors="coerce")
-            df_hist.sort_values("fecha_dt", inplace=True)
-        df_hist["monto"] = df_hist["monto"].apply(formatear_cop)
-        df_hist.rename(
+            df_hist = df_hist.sort_values("fecha_dt", ascending=False)
+        for _, r in df_hist.iterrows():
+            f = r.get("fecha", "")
+            try:
+                f_str = pd.to_datetime(f).strftime("%d %b %Y") if f else ""
+            except Exception:
+                f_str = str(f)[:10]
+            qp = r.get("quien_paga", "")
+            qr = r.get("quien_recibe", "")
+            m = formatear_cop(r.get("monto", 0))
+            nota = (r.get("nota") or "") if isinstance(r.get("nota"), str) else ""
+            st.markdown(f"- **{f_str}:** {qp} abonó {m} a {qr}" + (f" | {nota}" if nota else ""))
+        st.markdown("---")
+        df_hist_tab = df_hist.copy()
+        df_hist_tab["monto"] = df_hist_tab["monto"].apply(formatear_cop)
+        df_hist_tab.rename(
             columns={
                 "fecha": "Fecha",
                 "quien_paga": "Quién paga",
@@ -665,7 +861,7 @@ def render_estado_cuenta_y_pagos(
             inplace=True,
         )
         st.dataframe(
-            df_hist[["Fecha", "Quién paga", "Quién recibe", "Monto", "Nota"]],
+            df_hist_tab[["Fecha", "Quién paga", "Quién recibe", "Monto", "Nota"]],
             use_container_width=True,
         )
 
@@ -1148,12 +1344,260 @@ def generar_reporte_texto(
     return "\n".join(lineas)
 
 
+def render_prestamos_tab(persona1: str, persona2: str) -> None:
+    """Pestaña de préstamos entre la pareja."""
+    with st.spinner("Cargando préstamos..."):
+        df_prestamos = load_prestamos_df()
+        df_abonos = load_abonos_prestamos_df()
+
+    # ----- Sección 1: Registrar nuevo préstamo -----
+    st.subheader("🏦 Registrar nuevo préstamo")
+    with st.container():
+        with st.form("form_nuevo_prestamo"):
+            c1, c2 = st.columns(2)
+            with c1:
+                fecha_prestamo = st.date_input("Fecha del préstamo", value=date.today())
+                quien_presta = st.selectbox(
+                    "¿Quién presta?",
+                    options=[persona1, persona2],
+                    key="prestamo_quien_presta",
+                )
+            quien_recibe = persona2 if quien_presta == persona1 else persona1
+            st.caption(f"→ le presta a **{quien_recibe}**")
+            monto_prestamo = st.number_input(
+                "Monto ($)",
+                min_value=1.0,
+                value=100000.0,
+                step=10000.0,
+                format="%.0f",
+            )
+            motivo_prestamo = st.text_input(
+                "Motivo",
+                placeholder="Ej: Compra celular, Emergencia médica, Cuota carro",
+            )
+            if st.form_submit_button("🏦 Registrar préstamo"):
+                if not motivo_prestamo.strip():
+                    st.error("Indica el motivo del préstamo.")
+                else:
+                    add_prestamo(
+                        fecha=fecha_prestamo,
+                        quien_presta=quien_presta,
+                        quien_recibe=quien_recibe,
+                        monto=monto_prestamo,
+                        motivo=motivo_prestamo.strip(),
+                    )
+                    st.success("Préstamo registrado.")
+                    st.rerun()
+
+    st.markdown("---")
+    # ----- Sección 2: Préstamos activos -----
+    st.subheader("🏦 Préstamos activos")
+    activos = pd.DataFrame()
+    if not df_prestamos.empty and "estado" in df_prestamos.columns:
+        activos = df_prestamos[
+            df_prestamos["estado"].astype(str).str.lower().isin(["activo", "parcial"])
+        ].copy()
+    if activos.empty:
+        st.info("No hay préstamos activos o parcialmente pagados.")
+    else:
+        for _, p in activos.iterrows():
+            pid = int(p.get("id", 0))
+            monto = float(p.get("monto", 0.0))
+            abonado = float(p.get("monto_abonado", 0.0))
+            saldo = monto - abonado
+            motivo = str(p.get("motivo", "")) or f"Préstamo #{pid}"
+            quien_p = str(p.get("quien_presta", ""))
+            quien_r = str(p.get("quien_recibe", ""))
+            f = p.get("fecha")
+            f_str = f.strftime("%d %b %Y") if hasattr(f, "strftime") else str(f)
+            pct = (abonado / monto * 100.0) if monto > 0 else 0.0
+
+            with st.expander(
+                f"🏦 Préstamo #{pid} — {motivo} · Saldo: {formatear_cop(saldo)}",
+                expanded=True,
+            ):
+                st.markdown(
+                    f"**{quien_p}** le prestó **{formatear_cop(monto)}** a **{quien_r}** · {f_str}"
+                )
+                st.markdown(
+                    f"Monto original: **{formatear_cop(monto)}** · "
+                    f"Total abonado: **{formatear_cop(abonado)}** · "
+                    f"Saldo pendiente: **{formatear_cop(saldo)}**"
+                )
+                st.progress(min(pct / 100.0, 1.0), text=f"{pct:.1f}% pagado")
+
+                # Formulario de abono inline
+                with st.form(key=f"abono_prestamo_{pid}"):
+                    tipo_abono = st.radio(
+                        "Tipo de abono",
+                        options=["pagar_todo", "parcial"],
+                        format_func=lambda x: (
+                            f"💰 Pagar todo ({formatear_cop(saldo)})"
+                            if x == "pagar_todo"
+                            else "💳 Abonar parcial"
+                        ),
+                        key=f"tipo_abono_{pid}",
+                    )
+                    col_a1, col_a2 = st.columns(2)
+                    with col_a1:
+                        monto_abono = st.number_input(
+                            "Monto a abonar",
+                            min_value=0.0,
+                            value=saldo if tipo_abono == "pagar_todo" else min(saldo, 100000.0),
+                            max_value=saldo,
+                            step=10000.0,
+                            format="%.0f",
+                            key=f"monto_abono_{pid}",
+                        )
+                        fecha_abono = st.date_input(
+                            "Fecha del abono",
+                            value=date.today(),
+                            key=f"fecha_abono_{pid}",
+                        )
+                    nota_abono = st.text_input(
+                        "Nota (ej: Transferencia Nequi)",
+                        key=f"nota_abono_{pid}",
+                    )
+                    if st.form_submit_button("✅ Registrar abono"):
+                        if monto_abono <= 0:
+                            st.warning("El monto debe ser mayor a 0.")
+                        elif monto_abono > saldo:
+                            st.warning("El monto no puede superar el saldo pendiente.")
+                        else:
+                            add_abono_prestamo(
+                                prestamo_id=pid,
+                                fecha=fecha_abono,
+                                monto=monto_abono,
+                                nota=nota_abono or "",
+                            )
+                            st.success("Abono registrado.")
+                            st.rerun()
+
+                # Historial de abonos (timeline)
+                st.markdown("**Historial de abonos**")
+                abonos_este = (
+                    df_abonos[df_abonos["prestamo_id"] == pid].sort_values(
+                        "fecha", ascending=False
+                    )
+                    if not df_abonos.empty and "prestamo_id" in df_abonos.columns
+                    else pd.DataFrame()
+                )
+                if abonos_este.empty:
+                    st.caption(f"○ {f_str} — Préstamo creado — {formatear_cop(monto)}")
+                else:
+                    for _, ab in abonos_este.iterrows():
+                        fa = ab.get("fecha")
+                        fa_str = fa.strftime("%d %b") if hasattr(fa, "strftime") else str(fa)
+                        st.caption(
+                            f"● {fa_str} — Abonó {formatear_cop(float(ab.get('monto', 0)))} — "
+                            f"\"{ab.get('nota', '')}\""
+                        )
+                    st.caption(f"○ {f_str} — Préstamo creado — {formatear_cop(monto)}")
+
+    st.markdown("---")
+    # ----- Sección 3: Resumen de préstamos -----
+    st.subheader("Resumen de préstamos")
+    total_prestado = 0.0
+    p1_presto = 0.0
+    p2_presto = 0.0
+    if not df_prestamos.empty:
+        total_prestado = float(df_prestamos["monto"].sum())
+        if "quien_presta" in df_prestamos.columns:
+            for _, r in df_prestamos.iterrows():
+                m = float(r.get("monto", 0.0))
+                if str(r.get("quien_presta", "")) == persona1:
+                    p1_presto += m
+                else:
+                    p2_presto += m
+    balance_p = calcular_balance_prestamos(df_prestamos, persona1, persona2)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🏦 Total Prestado", formatear_cop(total_prestado))
+    with col2:
+        st.metric(f"💰 {persona1} ha prestado", formatear_cop(p1_presto))
+    with col3:
+        st.metric(f"💰 {persona2} ha prestado", formatear_cop(p2_presto))
+    with col4:
+        st.metric("⚖️ Balance Préstamos", formatear_cop(abs(balance_p)))
+
+    if abs(balance_p) < 1:
+        st.success("✅ No hay préstamos pendientes.")
+    else:
+        if balance_p > 0:
+            st.info(f"💰 {persona2} le debe {formatear_cop(balance_p)} a {persona1} en préstamos.")
+        else:
+            st.info(f"💰 {persona1} le debe {formatear_cop(abs(balance_p))} a {persona2} en préstamos.")
+
+    st.markdown("---")
+    # ----- Sección 4: Historial de préstamos saldados -----
+    st.subheader("Historial de préstamos saldados")
+    saldados = pd.DataFrame()
+    if not df_prestamos.empty and "estado" in df_prestamos.columns:
+        saldados = df_prestamos[
+            df_prestamos["estado"].astype(str).str.lower() == "saldado"
+        ].copy()
+    if saldados.empty:
+        st.caption("Aún no hay préstamos saldados.")
+    else:
+        with st.expander("Ver tabla de préstamos saldados", expanded=False):
+            filas = []
+            for _, row in saldados.iterrows():
+                f_creado = row.get("fecha")
+                f_creado_str = (
+                    f_creado.strftime("%d %b %Y")
+                    if hasattr(f_creado, "strftime")
+                    else str(f_creado)
+                )
+                quien_p = str(row.get("quien_presta", ""))
+                quien_r = str(row.get("quien_recibe", ""))
+                m = float(row.get("monto", 0.0))
+                # Fecha saldado: último abono de este préstamo
+                pid = int(row.get("id", 0))
+                abonos_p = (
+                    df_abonos[df_abonos["prestamo_id"] == pid]
+                    if not df_abonos.empty and "prestamo_id" in df_abonos.columns
+                    else pd.DataFrame()
+                )
+                if abonos_p.empty:
+                    f_saldado_str = "—"
+                    dias_str = "—"
+                else:
+                    f_saldado = abonos_p["fecha"].max()
+                    f_saldado_str = (
+                        f_saldado.strftime("%d %b %Y")
+                        if hasattr(f_saldado, "strftime")
+                        else str(f_saldado)
+                    )
+                    try:
+                        d1 = pd.Timestamp(f_creado) if f_creado else None
+                        d2 = pd.Timestamp(f_saldado) if hasattr(f_saldado, "strftime") else f_saldado
+                        if d1 is not None and d2 is not None:
+                            dias = (d2 - d1).days
+                            dias_str = f"{dias} días"
+                        else:
+                            dias_str = "—"
+                    except Exception:
+                        dias_str = "—"
+                filas.append({
+                    "Fecha": f_creado_str,
+                    "Préstamo": str(row.get("motivo", "")) or f"#{pid}",
+                    "Quién prestó": f"{quien_p} → {quien_r}",
+                    "Monto": formatear_cop(m),
+                    "Saldado el": f_saldado_str,
+                    "Tiempo": dias_str,
+                })
+            if filas:
+                st.dataframe(pd.DataFrame(filas), use_container_width=True)
+
+
 def render_resumen_global(persona1: str, persona2: str) -> None:
-    """Tab de resumen global combinando ambas categorías."""
+    """Tab de resumen global combinando ambas categorías y préstamos."""
     with st.spinner("Cargando datos globales..."):
         df_gastos = load_gastos_df()
         df_pagos = load_pagos_df()
         df_viajes = load_viajes_df()
+        df_prestamos = load_prestamos_df()
 
     if not df_gastos.empty and "categoria" in df_gastos.columns:
         df_viaje = df_gastos[df_gastos["categoria"] == "viaje"].copy()
@@ -1171,22 +1615,166 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
 
     bal_viaje, res_viaje = calcular_balance(df_viaje, df_pagos_viaje, persona1, persona2)
     bal_hogar, res_hogar = calcular_balance(df_hogar, df_pagos_hogar, persona1, persona2)
+    bal_prestamos = calcular_balance_prestamos(df_prestamos, persona1, persona2)
 
-    # Global: todos los gastos y todos los pagos (incluye "general")
+    # Global: gastos + pagos (sin préstamos)
     bal_global, res_global = calcular_balance(df_gastos, df_pagos, persona1, persona2)
+    # Balance total incluyendo préstamos
+    balance_total = bal_viaje + bal_hogar + bal_prestamos
 
-    st.subheader("Resumen por categoría")
+    # ----- Tarjetas superiores: Balance Viaje, Balance Hogar, BALANCE TOTAL -----
+    def _saldo_color(val: float) -> str:
+        return "#10B981" if val >= 0 else "#EF4444"
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Balance viajes", formatear_cop(res_viaje["saldo_pendiente"]))
+        st.markdown(
+            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
+            f'<span style="font-size:1.2rem;">🧳</span> <strong>Balance Viaje</strong><br>'
+            f'<span style="color:{_saldo_color(bal_viaje)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_viaje))}</span></div>',
+            unsafe_allow_html=True,
+        )
     with col2:
-        st.metric("Balance hogar", formatear_cop(res_hogar["saldo_pendiente"]))
+        st.markdown(
+            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
+            f'<span style="font-size:1.2rem;">🏠</span> <strong>Balance Hogar</strong><br>'
+            f'<span style="color:{_saldo_color(bal_hogar)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_hogar))}</span></div>',
+            unsafe_allow_html=True,
+        )
     with col3:
-        st.metric("Balance total", formatear_cop(res_global["saldo_pendiente"]))
+        st.markdown(
+            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
+            f'<strong>BALANCE TOTAL</strong><br>'
+            f'<span style="color:{_saldo_color(balance_total)};font-size:1.1rem;">Saldo neto: {formatear_cop(abs(balance_total))}</span></div>',
+            unsafe_allow_html=True,
+        )
 
-    st.markdown("### Balance global")
-    mostrar_mensaje_balance(bal_global, persona1, persona2)
+    # ----- BALANCE FINAL + desglose (viaje + hogar + préstamos) -----
+    st.markdown("---")
+    st.markdown(
+        '<p style="font-size:1.5rem;color:#F59E0B;font-weight:700;">BALANCE FINAL</p>',
+        unsafe_allow_html=True,
+    )
+    if abs(balance_total) < 1:
+        st.markdown(
+            "<h2 style='text-align:center; color:#F59E0B;'>✅ Están a mano, nadie le debe a nadie.</h2>",
+            unsafe_allow_html=True,
+        )
+    elif balance_total > 0:
+        st.markdown(
+            f"<h2 style='text-align:center; color:#10B981;'>Sumando gastos de viaje, hogar y préstamos: {persona2} le debe {formatear_cop(balance_total)} a {persona1}</h2>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"<h2 style='text-align:center; color:#EF4444;'>Sumando gastos de viaje, hogar y préstamos: {persona1} le debe {formatear_cop(abs(balance_total))} a {persona2}</h2>",
+            unsafe_allow_html=True,
+        )
 
+    abonado_total = (res_global.get("abonos_p1_a_p2", 0.0) or 0.0) + (
+        res_global.get("abonos_p2_a_p1", 0.0) or 0.0
+    )
+    st.caption(
+        f"Viaje: {formatear_cop(bal_viaje)} + Hogar: {formatear_cop(bal_hogar)} + Préstamos: {formatear_cop(bal_prestamos)} — "
+        f"Abonado total (gastos): {formatear_cop(abonado_total)}"
+    )
+
+    # Tres columnas: Viajes, Hogar, Total Abonado
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**🧳 Viajes**")
+        st.write(f"Debe: {formatear_cop(res_viaje.get('deuda_original') or 0)}")
+        st.write(f"Abonó: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)}")
+        st.markdown(f"**Saldo:** <span style='color:{_saldo_color(bal_viaje)}'>{formatear_cop(abs(bal_viaje))}</span>", unsafe_allow_html=True)
+    with c2:
+        st.markdown("**🏠 Hogar**")
+        st.write(f"Debe: {formatear_cop(res_hogar.get('deuda_original') or 0)}")
+        st.write(f"Abonó: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}")
+        st.markdown(f"**Saldo:** <span style='color:{_saldo_color(bal_hogar)}'>{formatear_cop(abs(bal_hogar))}</span>", unsafe_allow_html=True)
+    with c3:
+        st.markdown("**Total Abonado**")
+        st.write(formatear_cop(abonado_total))
+        st.caption("Total pagos")
+
+    # Barra de progreso global (% de deuda pagada)
+    deuda_total_global = float(res_global.get("deuda_original", 0.0) or 0.0)
+    abonado_total_global = float(res_global.get("abonos_aplicados", 0.0) or 0.0)
+    if deuda_total_global > 0:
+        pct_pagado = abonado_total_global / deuda_total_global * 100.0
+    else:
+        pct_pagado = 100.0 if abs(bal_global) < 1 else 0.0
+    st.progress(min(pct_pagado / 100.0, 1.0), text=f"{pct_pagado:.0f}% de deuda total pagada")
+
+    # ----- Préstamos pendientes -----
+    st.markdown("### 🏦 Préstamos pendientes")
+    activos_p = pd.DataFrame()
+    if not df_prestamos.empty and "estado" in df_prestamos.columns:
+        activos_p = df_prestamos[
+            df_prestamos["estado"].astype(str).str.lower().isin(["activo", "parcial"])
+        ].copy()
+    if activos_p.empty:
+        st.caption("No hay préstamos activos.")
+        total_adeudado_prestamos = 0.0
+        total_prestado_activo = 0.0
+        total_abonado_activo = 0.0
+    else:
+        total_adeudado_prestamos = 0.0
+        total_prestado_activo = float(activos_p["monto"].sum())
+        total_abonado_activo = float(activos_p["monto_abonado"].sum())
+        total_adeudado_prestamos = total_prestado_activo - total_abonado_activo
+        for _, p in activos_p.iterrows():
+            m = float(p.get("monto", 0.0))
+            ab = float(p.get("monto_abonado", 0.0))
+            saldo_p = m - ab
+            motivo_p = str(p.get("motivo", "")) or f"Préstamo #{int(p.get('id', 0))}"
+            st.caption(f"• {motivo_p}: saldo {formatear_cop(saldo_p)}")
+        st.markdown(f"**Total adeudado por préstamos:** {formatear_cop(total_adeudado_prestamos)}")
+        if total_prestado_activo > 0:
+            pct_prestamos = total_abonado_activo / total_prestado_activo * 100.0
+            st.progress(min(pct_prestamos / 100.0, 1.0), text=f"{pct_prestamos:.1f}% de préstamos pagado")
+
+    st.markdown("### Resumen por categoría")
+    r1, r2 = st.columns(2)
+    with r1:
+        st.markdown("**🧳 Resumen Viaje**")
+        st.write(f"Total gastado: {formatear_cop(res_viaje.get('total_gastado') or 0)}")
+        st.write(f"{persona1} pagó: {formatear_cop(res_viaje.get('pago_p1') or 0)}")
+        st.write(f"{persona2} pagó: {formatear_cop(res_viaje.get('pago_p2') or 0)}")
+        st.write(f"Abonado: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)}")
+        st.markdown(f"**Saldo pendiente:** <span style='color:{_saldo_color(bal_viaje)}'>{formatear_cop(abs(bal_viaje))}</span>", unsafe_allow_html=True)
+    with r2:
+        st.markdown("**🏠 Resumen Hogar**")
+        st.write(f"Total gastado: {formatear_cop(res_hogar.get('total_gastado') or 0)}")
+        st.write(f"{persona1} pagó: {formatear_cop(res_hogar.get('pago_p1') or 0)}")
+        st.write(f"{persona2} pagó: {formatear_cop(res_hogar.get('pago_p2') or 0)}")
+        st.write(f"Abonado: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}")
+        st.markdown(f"**Saldo pendiente:** <span style='color:{_saldo_color(bal_hogar)}'>{formatear_cop(abs(bal_hogar))}</span>", unsafe_allow_html=True)
+
+    # Comparación de gastos por categoría (gráfico de barras)
+    st.markdown("### Comparación de gastos por categoría")
+    comp_data = []
+    if not df_viaje.empty:
+        comp_data.append({"Categoría": "Viaje", "Persona": persona1, "Monto": res_viaje.get("pago_p1") or 0})
+        comp_data.append({"Categoría": "Viaje", "Persona": persona2, "Monto": res_viaje.get("pago_p2") or 0})
+    if not df_hogar.empty:
+        comp_data.append({"Categoría": "Hogar", "Persona": persona1, "Monto": res_hogar.get("pago_p1") or 0})
+        comp_data.append({"Categoría": "Hogar", "Persona": persona2, "Monto": res_hogar.get("pago_p2") or 0})
+    if comp_data:
+        df_comp = pd.DataFrame(comp_data)
+        fig = px.bar(
+            df_comp,
+            x="Categoría",
+            y="Monto",
+            color="Persona",
+            barmode="group",
+            color_discrete_sequence=["#F59E0B", "#1E293B"],
+        )
+        fig.update_yaxes(tickprefix="$", separatethousands=True)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No hay gastos para comparar.")
+
+    # Progreso por categoría (antes "Resumen de deudas por viaje")
     st.markdown("### Progreso de pago por categoría")
     col_pg1, col_pg2 = st.columns(2)
     with col_pg1:
@@ -1202,54 +1790,75 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
             text=f"{res_hogar.get('porcentaje_pagado', 0.0):.1f}% pagado",
         )
 
-    # Desglose por viaje
-    st.markdown("### Resumen de deudas por viaje")
-    filas_resumen_viajes = []
+    # Resumen de deudas por categoría: viajes + fila Hogar
+    st.markdown("### Resumen de deudas por categoría")
+    filas_resumen = []
+
+    # Filas por cada viaje
     if not df_viajes.empty:
         for _, v in df_viajes.iterrows():
             vid = int(v["id"])
-            # Filtrar por viaje_id de forma segura
             if not df_viaje.empty and "viaje_id" in df_viaje.columns:
                 gastos_v = df_viaje[df_viaje["viaje_id"] == vid]
             else:
                 gastos_v = df_viaje.copy()
-
             if not df_pagos_viaje.empty and "viaje_id" in df_pagos_viaje.columns:
                 pagos_v = df_pagos_viaje[df_pagos_viaje["viaje_id"] == vid]
             else:
                 pagos_v = df_pagos_viaje.copy()
             _, res_v = calcular_balance(gastos_v, pagos_v, persona1, persona2)
             saldo = float(res_v.get("saldo_pendiente", 0.0) or 0.0)
-            estado_sheet = str(v.get("saldado", "")).lower()
-            if estado_sheet == "saldado":
-                estado_label = "Saldado"
-            elif saldo > 0:
-                estado_label = "Pendiente"
+            deuda = float(res_v.get("deuda_original", 0.0) or 0.0)
+            abonado = float(res_v.get("abonos_aplicados", 0.0) or 0.0)
+            pct = float(res_v.get("porcentaje_pagado", 0.0) or 0.0)
+            if deuda > 0 and pct > 0 and pct < 100:
+                estado = "Parcial"
+            elif saldo <= 0 or pct >= 100:
+                estado = "Saldado"
             else:
-                estado_label = "Saldado"
-            filas_resumen_viajes.append(
-                {
-                    "Viaje": v.get("nombre", f"Viaje #{vid}"),
-                    "Destino": v.get("destino", ""),
-                    "Deuda": res_v.get("deuda_original", 0.0) or 0.0,
-                    "Abonado": res_v.get("abonos_aplicados", 0.0) or 0.0,
-                    "Saldo": saldo,
-                    "Estado": estado_label,
-                    "Progreso": res_v.get("porcentaje_pagado", 0.0) or 0.0,
-                }
-            )
+                estado = "Pendiente"
+            nombre_viaje = str(v.get("nombre", f"Viaje #{vid}"))
+            if v.get("destino"):
+                nombre_viaje += f" ({v.get('destino')})"
+            filas_resumen.append({
+                "Categoria": nombre_viaje,
+                "Deuda": deuda,
+                "Abonado": abonado,
+                "Saldo": saldo,
+                "Estado": estado,
+                "Progreso": pct,
+            })
 
-    if not filas_resumen_viajes:
-        st.info("Aún no hay viajes registrados.")
+    # Fila Hogar
+    d_h = float(res_hogar.get("deuda_original", 0.0) or 0.0)
+    a_h = float(res_hogar.get("abonos_aplicados", 0.0) or 0.0)
+    s_h = float(res_hogar.get("saldo_pendiente", 0.0) or 0.0)
+    pct_h = float(res_hogar.get("porcentaje_pagado", 0.0) or 0.0)
+    if d_h > 0 and pct_h > 0 and pct_h < 100:
+        estado_h = "Parcial"
+    elif s_h <= 0 or pct_h >= 100:
+        estado_h = "Saldado"
     else:
-        df_res_viajes = pd.DataFrame(filas_resumen_viajes)
-        df_res_viajes["Deuda"] = df_res_viajes["Deuda"].apply(formatear_cop)
-        df_res_viajes["Abonado"] = df_res_viajes["Abonado"].apply(formatear_cop)
-        df_res_viajes["Saldo"] = df_res_viajes["Saldo"].apply(formatear_cop)
-        df_res_viajes["Progreso"] = df_res_viajes["Progreso"].map(
-            lambda v: f"{float(v):.1f}%"
-        )
-        st.dataframe(df_res_viajes, use_container_width=True)
+        estado_h = "Pendiente"
+    filas_resumen.append({
+        "Categoria": "Hogar",
+        "Deuda": d_h,
+        "Abonado": a_h,
+        "Saldo": s_h,
+        "Estado": estado_h,
+        "Progreso": pct_h,
+    })
+
+    if not filas_resumen:
+        st.info("Aún no hay datos de deudas.")
+    else:
+        df_res = pd.DataFrame(filas_resumen)
+        df_show = df_res.copy()
+        df_show["Deuda"] = df_show["Deuda"].apply(formatear_cop)
+        df_show["Abonado"] = df_show["Abonado"].apply(formatear_cop)
+        df_show["Saldo"] = df_show["Saldo"].apply(formatear_cop)
+        df_show["Progreso"] = df_show["Progreso"].map(lambda v: f"{float(v):.1f}%")
+        st.dataframe(df_show[["Categoria", "Deuda", "Abonado", "Saldo", "Estado", "Progreso"]], use_container_width=True)
 
     st.markdown("### Exportar datos")
     col_e1, col_e2 = st.columns(2)
@@ -1311,6 +1920,12 @@ def main():
         .stProgress > div > div > div {
             background-color: #F59E0B;
         }
+        /* Responsive / móvil: padding y áreas táctiles */
+        @media (max-width: 640px) {
+            .block-container { padding-top: 1rem; padding-bottom: 2rem; padding-left: 1rem; padding-right: 1rem; }
+            .stButton > button { min-height: 44px; padding: 0.5rem 1rem; }
+            .stSelectbox > div > div { min-height: 44px; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1351,12 +1966,39 @@ def main():
         st.cache_data.clear()
         st.rerun()
 
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📤 Exportar")
+    df_gastos_export = load_gastos_df()
+    if not df_gastos_export.empty:
+        csv_bytes = df_gastos_export.to_csv(index=False).encode("utf-8")
+        st.sidebar.download_button(
+            "Descargar CSV",
+            data=csv_bytes,
+            file_name="gastos_compartidos.csv",
+            mime="text/csv",
+            key="sidebar_csv",
+        )
+    reporte_texto = generar_reporte_texto(
+        persona1=persona1,
+        persona2=persona2,
+        df_gastos=df_gastos_export,
+        df_pagos=load_pagos_df(),
+    )
+    st.sidebar.download_button(
+        "Descargar Reporte",
+        data=reporte_texto,
+        file_name="reporte_gastos.txt",
+        mime="text/plain",
+        key="sidebar_reporte",
+    )
+    st.sidebar.caption("v1.0 | Datos en Google Sheets")
+
     st.title("👩🏻‍❤️‍👨🏻 Gestor de Gastos Compartidos")
     st.write(
         f"Gestiona y divide fácilmente los gastos entre **{persona1}** y **{persona2}**."
     )
 
-    tabs = st.tabs(["🧳 Viaje", "🏠 Hogar", "📊 Resumen Global"])
+    tabs = st.tabs(["🧳 Viaje", "🏠 Hogar", "🏦 Préstamos", "📊 Resumen Global"])
 
     # Tab de viaje trabajará sobre el viaje activo
     with tabs[0]:
@@ -1530,6 +2172,9 @@ def main():
             render_resumen_categoria("hogar", persona1, persona2)
 
     with tabs[2]:
+        render_prestamos_tab(persona1, persona2)
+
+    with tabs[3]:
         render_resumen_global(persona1, persona2)
         st.markdown("---")
         render_pagos_section(persona1, persona2)
