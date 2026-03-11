@@ -1225,30 +1225,85 @@ def render_form_gasto(categoria: str, persona1: str, persona2: str, viaje_id=Non
 
 
 def render_pagos_section(persona1: str, persona2: str) -> None:
-    """Sección global para registrar pagos/abonos generales y ver historial."""
+    """Sección global para registrar pagos/abonos por sección (general, viaje, hogar o préstamos)."""
     st.subheader("💸 Pagos / Abonos entre personas")
+    st.caption("Elige a qué sección aplica el abono; el monto se descontará solo de esa sección.")
+
+    # Selector de sección fuera del form para poder mostrar u ocultar el selector de préstamo
+    categoria_pago = st.selectbox(
+        "Aplica a la categoría",
+        ["general", "viaje", "hogar", "prestamos"],
+        format_func=lambda x: {
+            "general": "General",
+            "viaje": "Viaje",
+            "hogar": "Hogar",
+            "prestamos": "🏦 Préstamos",
+        }[x],
+        index=0,
+        key="pagos_aplica_categoria",
+    )
+
     col1, col2 = st.columns(2)
     with col1:
         with st.form("form_pagos"):
             fecha = st.date_input("Fecha del pago", value=date.today())
-            quien_paga = st.selectbox("Quién paga", [persona1, persona2])
+            quien_paga = st.selectbox("Quién paga", [persona1, persona2], key="pagos_quien_paga")
             quien_recibe = persona2 if quien_paga == persona1 else persona1
             monto = st.number_input(
                 "Monto (COP)",
                 min_value=0.0,
                 step=1000.0,
                 format="%.0f",
+                key="pagos_monto",
             )
-            categoria_pago = st.selectbox(
-                "Aplica a la categoría",
-                ["general", "viaje", "hogar"],
-                index=0,
-            )
-            nota = st.text_input("Nota (opcional)")
+
+            prestamo_id_seleccionado = None
+            if categoria_pago == "prestamos":
+                df_prestamos = load_prestamos_df()
+                activos = (
+                    df_prestamos[
+                        df_prestamos["estado"].astype(str).str.lower().isin(["activo", "parcial"])
+                    ].copy()
+                    if not df_prestamos.empty and "estado" in df_prestamos.columns
+                    else pd.DataFrame()
+                )
+                if activos.empty:
+                    st.warning("No hay préstamos activos. Crea uno en la pestaña 🏦 Préstamos.")
+                else:
+                    opciones = []
+                    for _, r in activos.iterrows():
+                        pid = int(r.get("id", 0))
+                        motivo = str(r.get("motivo", "")) or f"Préstamo #{pid}"
+                        saldo = float(r.get("monto", 0)) - float(r.get("monto_abonado", 0))
+                        if saldo > 0:
+                            opciones.append((pid, f"#{pid} — {motivo} (saldo {formatear_cop(saldo)})"))
+                    if opciones:
+                        ids = [o[0] for o in opciones]
+                        prestamo_id_seleccionado = st.selectbox(
+                            "¿A qué préstamo aplica este abono?",
+                            options=ids,
+                            format_func=lambda i: next(s for pid, s in opciones if pid == i),
+                            key="pagos_prestamo_id",
+                        )
+
+            nota = st.text_input("Nota (opcional)", key="pagos_nota")
             submitted_pago = st.form_submit_button("Registrar pago")
+
             if submitted_pago:
                 if monto <= 0:
                     st.error("El monto debe ser mayor a cero.")
+                elif categoria_pago == "prestamos":
+                    if prestamo_id_seleccionado is None:
+                        st.error("Elige un préstamo activo o crea uno en la pestaña Préstamos.")
+                    else:
+                        add_abono_prestamo(
+                            prestamo_id=prestamo_id_seleccionado,
+                            fecha=fecha,
+                            monto=monto,
+                            nota=nota or "",
+                        )
+                        st.success("Abono registrado en la sección Préstamos. Se descontó de ese préstamo.")
+                        st.rerun()
                 else:
                     add_pago(
                         fecha=fecha,
@@ -1259,13 +1314,13 @@ def render_pagos_section(persona1: str, persona2: str) -> None:
                         nota=nota,
                         viaje_id=None,
                     )
-                    st.success("Pago registrado correctamente.")
+                    st.success("Pago registrado correctamente. Se descontó de la sección elegida.")
 
     with col2:
         with st.spinner("Cargando historial de pagos..."):
             df_pagos = load_pagos_df()
         if df_pagos.empty:
-            st.info("Aún no hay pagos registrados.")
+            st.info("Aún no hay pagos registrados en gastos (viaje/hogar/general).")
         else:
             df_pagos_mostrar = df_pagos.copy()
             df_pagos_mostrar["monto"] = df_pagos_mostrar["monto"].apply(formatear_cop)
@@ -1280,10 +1335,12 @@ def render_pagos_section(persona1: str, persona2: str) -> None:
                 },
                 inplace=True,
             )
+            st.markdown("**Historial de abonos (gastos)**")
             st.dataframe(
                 df_pagos_mostrar[["Fecha", "Quién paga", "Quién recibe", "Monto", "Categoría", "Nota"]],
                 use_container_width=True,
             )
+        st.caption("Los abonos a préstamos aparecen en la pestaña 🏦 Préstamos.")
 
 
 def generar_reporte_texto(
