@@ -691,17 +691,17 @@ def mostrar_mensaje_balance(balance_p1: float, persona1: str, persona2: str) -> 
     """Muestra un mensaje grande y colorido con el balance."""
     if abs(balance_p1) < 1:
         mensaje = f"✅ Están a mano, nadie le debe a nadie."
-        color = "#F59E0B"
+        color = "#0EA5E9"
     elif balance_p1 > 0:
         mensaje = (
             f"💰 {persona2} le debe {formatear_cop(balance_p1)} a {persona1}"
         )
-        color = "#10B981"
+        color = "#059669"
     else:
         mensaje = (
             f"💰 {persona1} le debe {formatear_cop(abs(balance_p1))} a {persona2}"
         )
-        color = "#EF4444"
+        color = "#DC2626"
 
     st.markdown(
         f"<h2 style='text-align:center; color:{color};'>{mensaje}</h2>",
@@ -742,7 +742,7 @@ def render_estado_cuenta_y_pagos(
             nota = (r.get("nota") or "") if isinstance(r.get("nota"), str) else ""
             st.caption(f"Abono {i} ({f_short}): {m}" + (f" | {nota}" if nota else ""))
     st.write(f"**Total abonado:** {formatear_cop(resumen.get('abonos_aplicados', 0.0))}")
-    st.markdown(f"**SALDO PENDIENTE:** <span style='color:#F59E0B;font-weight:700;'>{formatear_cop(saldo_pendiente)}</span>", unsafe_allow_html=True)
+    st.markdown(f"**SALDO PENDIENTE:** <span style='color:#D97706;font-weight:700;'>{formatear_cop(saldo_pendiente)}</span>", unsafe_allow_html=True)
 
     progreso = porcentaje_pagado / 100.0 if deuda_original > 0 else 0.0
     st.progress(progreso, text=f"{porcentaje_pagado:,.1f}% pagado" if deuda_original > 0 else "Sin deuda")
@@ -970,7 +970,7 @@ def render_resumen_categoria(
                 labels={"quien_pago": "Persona", "monto": "Monto pagado"},
                 title="Comparación de pagos por persona",
                 color="quien_pago",
-                color_discrete_sequence=["#FF6B35", "#FFA726"],
+            color_discrete_sequence=["#0EA5E9", "#10B981"],
             )
             fig_bar.update_yaxes(tickprefix="$", separatethousands=True)
             st.plotly_chart(fig_bar, use_container_width=True)
@@ -988,7 +988,7 @@ def render_resumen_categoria(
                 values="monto",
                 title="Distribución por subcategoría",
                 hole=0.4,
-                color_discrete_sequence=px.colors.sequential.Oranges,
+            color_discrete_sequence=["#0EA5E9", "#38BDF8"],
             )
             st.plotly_chart(fig_pie, use_container_width=True)
         else:
@@ -1616,85 +1616,103 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
     bal_viaje, res_viaje = calcular_balance(df_viaje, df_pagos_viaje, persona1, persona2)
     bal_hogar, res_hogar = calcular_balance(df_hogar, df_pagos_hogar, persona1, persona2)
     bal_prestamos = calcular_balance_prestamos(df_prestamos, persona1, persona2)
-
-    # Global: gastos + pagos (sin préstamos)
     bal_global, res_global = calcular_balance(df_gastos, df_pagos, persona1, persona2)
-    # Balance total incluyendo préstamos
-    balance_total = bal_viaje + bal_hogar + bal_prestamos
 
-    # ----- Tarjetas superiores: Balance Viaje, Balance Hogar, BALANCE TOTAL -----
+    # Colores claros por sección (fondo + borde). Los abonos restan en su propia sección.
+    VIAJE_BG, VIAJE_BORDER = "#E0F2FE", "#0EA5E9"
+    HOGAR_BG, HOGAR_BORDER = "#D1FAE5", "#10B981"
+    PRESTAMOS_BG, PRESTAMOS_BORDER = "#FEF3C7", "#D97706"
+    SALDO_POS = "#059669"
+    SALDO_NEG = "#DC2626"
+
     def _saldo_color(val: float) -> str:
-        return "#10B981" if val >= 0 else "#EF4444"
+        return SALDO_POS if val >= 0 else SALDO_NEG
 
+    # ----- Tres secciones separadas: cada una con su saldo (no se mezclan las deudas) -----
+    st.markdown("**Los valores se muestran por sección. Cada abono se resta solo en su sección (viaje, hogar o préstamo).**")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(
-            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
-            f'<span style="font-size:1.2rem;">🧳</span> <strong>Balance Viaje</strong><br>'
-            f'<span style="color:{_saldo_color(bal_viaje)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_viaje))}</span></div>',
+            f'<div style="background:{VIAJE_BG};border-radius:12px;padding:1rem;border:2px solid {VIAJE_BORDER};margin-bottom:0.5rem;">'
+            f'<span style="font-size:1.2rem;">🧳</span> <strong>Viaje</strong><br>'
+            f'<span style="color:{_saldo_color(bal_viaje)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_viaje))}</span><br>'
+            f'<small style="color:#64748B;">Abonos restan aquí</small></div>',
             unsafe_allow_html=True,
         )
     with col2:
         st.markdown(
-            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
-            f'<span style="font-size:1.2rem;">🏠</span> <strong>Balance Hogar</strong><br>'
-            f'<span style="color:{_saldo_color(bal_hogar)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_hogar))}</span></div>',
+            f'<div style="background:{HOGAR_BG};border-radius:12px;padding:1rem;border:2px solid {HOGAR_BORDER};margin-bottom:0.5rem;">'
+            f'<span style="font-size:1.2rem;">🏠</span> <strong>Hogar</strong><br>'
+            f'<span style="color:{_saldo_color(bal_hogar)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_hogar))}</span><br>'
+            f'<small style="color:#64748B;">Abonos restan aquí</small></div>',
             unsafe_allow_html=True,
         )
     with col3:
         st.markdown(
-            f'<div style="background:#111827;border-radius:12px;padding:1rem;border:1px solid #1E293B;">'
-            f'<strong>BALANCE TOTAL</strong><br>'
-            f'<span style="color:{_saldo_color(balance_total)};font-size:1.1rem;">Saldo neto: {formatear_cop(abs(balance_total))}</span></div>',
+            f'<div style="background:{PRESTAMOS_BG};border-radius:12px;padding:1rem;border:2px solid {PRESTAMOS_BORDER};margin-bottom:0.5rem;">'
+            f'<span style="font-size:1.2rem;">🏦</span> <strong>Préstamos</strong><br>'
+            f'<span style="color:{_saldo_color(bal_prestamos)};font-size:1.1rem;">Saldo: {formatear_cop(abs(bal_prestamos))}</span><br>'
+            f'<small style="color:#64748B;">Abonos restan aquí</small></div>',
             unsafe_allow_html=True,
         )
 
-    # ----- BALANCE FINAL + desglose (viaje + hogar + préstamos) -----
+    # ----- Resumen por sección (sin mezclar): mensaje por cada una -----
     st.markdown("---")
     st.markdown(
-        '<p style="font-size:1.5rem;color:#F59E0B;font-weight:700;">BALANCE FINAL</p>',
+        '<p style="font-size:1.2rem;color:#475569;font-weight:600;">Resumen por sección</p>',
         unsafe_allow_html=True,
     )
-    if abs(balance_total) < 1:
-        st.markdown(
-            "<h2 style='text-align:center; color:#F59E0B;'>✅ Están a mano, nadie le debe a nadie.</h2>",
-            unsafe_allow_html=True,
-        )
-    elif balance_total > 0:
-        st.markdown(
-            f"<h2 style='text-align:center; color:#10B981;'>Sumando gastos de viaje, hogar y préstamos: {persona2} le debe {formatear_cop(balance_total)} a {persona1}</h2>",
-            unsafe_allow_html=True,
-        )
+    if abs(bal_viaje) < 1:
+        msg_viaje = f"🧳 Viaje: nadie le debe a nadie."
+    elif bal_viaje > 0:
+        msg_viaje = f"🧳 Viaje: {persona2} le debe {formatear_cop(bal_viaje)} a {persona1}."
     else:
-        st.markdown(
-            f"<h2 style='text-align:center; color:#EF4444;'>Sumando gastos de viaje, hogar y préstamos: {persona1} le debe {formatear_cop(abs(balance_total))} a {persona2}</h2>",
-            unsafe_allow_html=True,
-        )
+        msg_viaje = f"🧳 Viaje: {persona1} le debe {formatear_cop(abs(bal_viaje))} a {persona2}."
+    if abs(bal_hogar) < 1:
+        msg_hogar = f"🏠 Hogar: nadie le debe a nadie."
+    elif bal_hogar > 0:
+        msg_hogar = f"🏠 Hogar: {persona2} le debe {formatear_cop(bal_hogar)} a {persona1}."
+    else:
+        msg_hogar = f"🏠 Hogar: {persona1} le debe {formatear_cop(abs(bal_hogar))} a {persona2}."
+    if abs(bal_prestamos) < 1:
+        msg_prestamos = f"🏦 Préstamos: no hay saldo pendiente."
+    elif bal_prestamos > 0:
+        msg_prestamos = f"🏦 Préstamos: {persona2} le debe {formatear_cop(bal_prestamos)} a {persona1}."
+    else:
+        msg_prestamos = f"🏦 Préstamos: {persona1} le debe {formatear_cop(abs(bal_prestamos))} a {persona2}."
+
+    st.markdown(f"**{msg_viaje}**")
+    st.markdown(f"**{msg_hogar}**")
+    st.markdown(f"**{msg_prestamos}**")
 
     abonado_total = (res_global.get("abonos_p1_a_p2", 0.0) or 0.0) + (
         res_global.get("abonos_p2_a_p1", 0.0) or 0.0
     )
     st.caption(
-        f"Viaje: {formatear_cop(bal_viaje)} + Hogar: {formatear_cop(bal_hogar)} + Préstamos: {formatear_cop(bal_prestamos)} — "
-        f"Abonado total (gastos): {formatear_cop(abonado_total)}"
+        f"Abonado en Viaje: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)} · "
+        f"Abonado en Hogar: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}. "
+        f"Préstamos: abonos en pestaña Préstamos."
     )
 
-    # Tres columnas: Viajes, Hogar, Total Abonado
+    abonado_total = (res_global.get("abonos_p1_a_p2", 0.0) or 0.0) + (
+        res_global.get("abonos_p2_a_p1", 0.0) or 0.0
+    )
+    # Tres columnas: cada sección con su deuda y abonado (abonos restan en esa sección)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("**🧳 Viajes**")
+        st.markdown(f"**🧳 Viaje** *(abonos restan aquí)*")
         st.write(f"Debe: {formatear_cop(res_viaje.get('deuda_original') or 0)}")
-        st.write(f"Abonó: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)}")
+        st.write(f"Abonado en viaje: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)}")
         st.markdown(f"**Saldo:** <span style='color:{_saldo_color(bal_viaje)}'>{formatear_cop(abs(bal_viaje))}</span>", unsafe_allow_html=True)
     with c2:
-        st.markdown("**🏠 Hogar**")
+        st.markdown(f"**🏠 Hogar** *(abonos restan aquí)*")
         st.write(f"Debe: {formatear_cop(res_hogar.get('deuda_original') or 0)}")
-        st.write(f"Abonó: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}")
+        st.write(f"Abonado en hogar: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}")
         st.markdown(f"**Saldo:** <span style='color:{_saldo_color(bal_hogar)}'>{formatear_cop(abs(bal_hogar))}</span>", unsafe_allow_html=True)
     with c3:
-        st.markdown("**Total Abonado**")
+        st.markdown("**📋 Resumen abonado (gastos)**")
         st.write(formatear_cop(abonado_total))
-        st.caption("Total pagos")
+        st.caption("Suma de abonos en Viaje + Hogar")
 
     # Barra de progreso global (% de deuda pagada)
     deuda_total_global = float(res_global.get("deuda_original", 0.0) or 0.0)
@@ -1707,6 +1725,7 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
 
     # ----- Préstamos pendientes -----
     st.markdown("### 🏦 Préstamos pendientes")
+    st.caption("Los abonos a préstamos se registran en la pestaña Préstamos y restan solo del préstamo correspondiente.")
     activos_p = pd.DataFrame()
     if not df_prestamos.empty and "estado" in df_prestamos.columns:
         activos_p = df_prestamos[
@@ -1736,19 +1755,25 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
     st.markdown("### Resumen por categoría")
     r1, r2 = st.columns(2)
     with r1:
-        st.markdown("**🧳 Resumen Viaje**")
-        st.write(f"Total gastado: {formatear_cop(res_viaje.get('total_gastado') or 0)}")
-        st.write(f"{persona1} pagó: {formatear_cop(res_viaje.get('pago_p1') or 0)}")
-        st.write(f"{persona2} pagó: {formatear_cop(res_viaje.get('pago_p2') or 0)}")
-        st.write(f"Abonado: {formatear_cop(res_viaje.get('abonos_aplicados') or 0)}")
-        st.markdown(f"**Saldo pendiente:** <span style='color:{_saldo_color(bal_viaje)}'>{formatear_cop(abs(bal_viaje))}</span>", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="background:{VIAJE_BG};border-radius:12px;padding:1rem;border:2px solid {VIAJE_BORDER};margin-bottom:1rem;">'
+            f'<strong>🧳 Resumen Viaje</strong><br>'
+            f'Total gastado: {formatear_cop(res_viaje.get("total_gastado") or 0)}<br>'
+            f'{persona1} pagó: {formatear_cop(res_viaje.get("pago_p1") or 0)} · {persona2} pagó: {formatear_cop(res_viaje.get("pago_p2") or 0)}<br>'
+            f'Abonado en esta sección: {formatear_cop(res_viaje.get("abonos_aplicados") or 0)}<br>'
+            f'<strong>Saldo pendiente:</strong> <span style="color:{_saldo_color(bal_viaje)}">{formatear_cop(abs(bal_viaje))}</span></div>',
+            unsafe_allow_html=True,
+        )
     with r2:
-        st.markdown("**🏠 Resumen Hogar**")
-        st.write(f"Total gastado: {formatear_cop(res_hogar.get('total_gastado') or 0)}")
-        st.write(f"{persona1} pagó: {formatear_cop(res_hogar.get('pago_p1') or 0)}")
-        st.write(f"{persona2} pagó: {formatear_cop(res_hogar.get('pago_p2') or 0)}")
-        st.write(f"Abonado: {formatear_cop(res_hogar.get('abonos_aplicados') or 0)}")
-        st.markdown(f"**Saldo pendiente:** <span style='color:{_saldo_color(bal_hogar)}'>{formatear_cop(abs(bal_hogar))}</span>", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="background:{HOGAR_BG};border-radius:12px;padding:1rem;border:2px solid {HOGAR_BORDER};margin-bottom:1rem;">'
+            f'<strong>🏠 Resumen Hogar</strong><br>'
+            f'Total gastado: {formatear_cop(res_hogar.get("total_gastado") or 0)}<br>'
+            f'{persona1} pagó: {formatear_cop(res_hogar.get("pago_p1") or 0)} · {persona2} pagó: {formatear_cop(res_hogar.get("pago_p2") or 0)}<br>'
+            f'Abonado en esta sección: {formatear_cop(res_hogar.get("abonos_aplicados") or 0)}<br>'
+            f'<strong>Saldo pendiente:</strong> <span style="color:{_saldo_color(bal_hogar)}">{formatear_cop(abs(bal_hogar))}</span></div>',
+            unsafe_allow_html=True,
+        )
 
     # Comparación de gastos por categoría (gráfico de barras)
     st.markdown("### Comparación de gastos por categoría")
@@ -1767,7 +1792,7 @@ def render_resumen_global(persona1: str, persona2: str) -> None:
             y="Monto",
             color="Persona",
             barmode="group",
-            color_discrete_sequence=["#F59E0B", "#1E293B"],
+            color_discrete_sequence=["#0EA5E9", "#10B981"],
         )
         fig.update_yaxes(tickprefix="$", separatethousands=True)
         st.plotly_chart(fig, use_container_width=True)
@@ -1898,17 +1923,17 @@ def main():
     st.markdown(
         """
         <style>
-        /* Tarjetas de métricas */
+        /* Tarjetas: fondos claros por sección */
         .stMetric > div {
-            background-color: #111827;
+            background-color: #F1F5F9;
             border-radius: 12px;
             padding: 12px;
-            border: 1px solid #1E293B;
+            border: 1px solid #E2E8F0;
         }
-        /* Botones principales en dorado */
+        /* Botones: color primario elegante */
         .stButton > button, .stDownloadButton > button {
-            background: linear-gradient(90deg, #F59E0B, #fbbf24);
-            color: #0A0F1C;
+            background: linear-gradient(90deg, #0EA5E9, #38BDF8);
+            color: #fff;
             border-radius: 999px;
             border: none;
             font-weight: 600;
@@ -1916,11 +1941,10 @@ def main():
         .stButton > button:hover, .stDownloadButton > button:hover {
             filter: brightness(1.05);
         }
-        /* Progresos */
+        /* Barras de progreso */
         .stProgress > div > div > div {
-            background-color: #F59E0B;
+            background: linear-gradient(90deg, #0EA5E9, #38BDF8);
         }
-        /* Responsive / móvil: padding y áreas táctiles */
         @media (max-width: 640px) {
             .block-container { padding-top: 1rem; padding-bottom: 2rem; padding-left: 1rem; padding-right: 1rem; }
             .stButton > button { min-height: 44px; padding: 0.5rem 1rem; }
