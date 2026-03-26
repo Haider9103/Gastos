@@ -638,7 +638,7 @@ def calcular_balance(
     # Balance original (sin considerar abonos) desde la perspectiva de persona1
     balance_sin_abonos = pago_p1 - corresponde_p1
     # Balance final considerando abonos
-    balance_p1 = balance_sin_abonos - abonos_p1_a_p2 + abonos_p2_a_p1
+    balance_p1 = balance_sin_abonos - abonos_p1_a_p2 - abonos_p2_a_p1
 
     # Cálculo detallado de deuda, abonos y saldo pendiente
     if abs(balance_sin_abonos) < 1:
