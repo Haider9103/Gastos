@@ -418,6 +418,17 @@ def delete_gasto(record_id: int) -> None:
     st.cache_data.clear()
 
 
+def delete_pago(record_id: int) -> None:
+    """Elimina un pago/abono por ID."""
+    ws = get_worksheet("pagos")
+    row_index = _find_row_index_by_id(ws, record_id)
+    if row_index == -1:
+        st.warning("No se encontró el pago a eliminar.")
+        return
+    ws.delete_rows(row_index)
+    st.cache_data.clear()
+
+
 def add_pago(
     fecha: date,
     quien_paga: str,
@@ -639,8 +650,8 @@ def calcular_balance(
 
     # Balance original (sin considerar abonos) desde la perspectiva de persona1
     balance_sin_abonos = pago_p1 - corresponde_p1
-    # Balance final considerando abonos
-    balance_p1 = balance_sin_abonos - abonos_p1_a_p2 - abonos_p2_a_p1
+    # Balance final: si p2 paga a p1 reduce la deuda de p2; si p1 paga a p2 reduce la deuda de p1
+    balance_p1 = balance_sin_abonos + abonos_p1_a_p2 - abonos_p2_a_p1
 
     # Cálculo detallado de deuda, abonos y saldo pendiente
     if abs(balance_sin_abonos) < 1:
@@ -866,7 +877,15 @@ def render_estado_cuenta_y_pagos(
             qr = r.get("quien_recibe", "")
             m = formatear_cop(r.get("monto", 0))
             nota = (r.get("nota") or "") if isinstance(r.get("nota"), str) else ""
-            st.markdown(f"- **{f_str}:** {qp} abonó {m} a {qr}" + (f" | {nota}" if nota else ""))
+            pid = r.get("id")
+            c1, c2 = st.columns([8, 1])
+            with c1:
+                st.markdown(f"- **{f_str}:** {qp} abonó {m} a {qr}" + (f" | {nota}" if nota else ""))
+            with c2:
+                if pid and st.button("🗑️", key=f"del_pago_{categoria}_{pid}", help="Eliminar este pago"):
+                    delete_pago(int(pid))
+                    st.success("Pago eliminado.")
+                    st.rerun()
         st.markdown("---")
         df_hist_tab = df_hist.copy()
         df_hist_tab["monto"] = df_hist_tab["monto"].apply(formatear_cop)
