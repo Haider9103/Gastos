@@ -214,6 +214,8 @@ def load_pagos_df() -> pd.DataFrame:
         )
     else:
         df["viaje_id"] = pd.Series([pd.NA] * len(df), dtype="Int64")
+    if "categoria" not in df.columns:
+        df["categoria"] = ""
     return df
 
 
@@ -802,6 +804,8 @@ def render_estado_cuenta_y_pagos(
         if submitted:
             if deuda_original <= 0:
                 st.error("Actualmente no hay deuda pendiente en esta categoría.")
+            elif saldo_pendiente <= 0:
+                st.error("La deuda ya fue saldada completamente. No hay monto pendiente.")
             else:
                 monto = saldo_pendiente if tipo_pago == "Pagar todo" else monto_input
                 if monto <= 0:
