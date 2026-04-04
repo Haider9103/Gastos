@@ -686,6 +686,7 @@ def calcular_balance(
         "abonos_aplicados": abonos_aplicados,
         "saldo_pendiente": saldo_pendiente,
         "porcentaje_pagado": porcentaje_pagado,
+        "balance_p1": balance_p1,
     }
 
 
@@ -749,13 +750,30 @@ def render_estado_cuenta_y_pagos(
     progreso = porcentaje_pagado / 100.0 if deuda_original > 0 else 0.0
     st.progress(progreso, text=f"{porcentaje_pagado:,.1f}% pagado" if deuda_original > 0 else "Sin deuda")
 
-    if deuda_original <= 0 or saldo_pendiente <= 0:
-        st.success("Esta categoría está completamente saldada entre ambas personas.")
+    # Balance neto real (incluye sobrepagos: si alguien pagó de más, la deuda se invierte)
+    balance_p1_actual = float(resumen.get("balance_p1", 0.0) or 0.0)
+    if abs(balance_p1_actual) < 1:
+        current_deudor = None
+        current_monto_neto = 0.0
+    elif balance_p1_actual > 0:
+        current_deudor = persona2
+        current_monto_neto = balance_p1_actual
     else:
+        current_deudor = persona1
+        current_monto_neto = abs(balance_p1_actual)
+
+    if current_monto_neto < 1:
+        st.success("Esta categoría está completamente saldada entre ambas personas.")
+    elif saldo_pendiente > 0:
         st.info(
             f"{deudor} aún le debe {formatear_cop(saldo_pendiente)} a {acreedor} "
             f"(abonó {formatear_cop(resumen.get('abonos_aplicados', 0.0))} "
             f"de {formatear_cop(deuda_original)})."
+        )
+    else:
+        st.warning(
+            f"La deuda original fue saldada, pero quedó un **sobrepago de {formatear_cop(current_monto_neto)}**. "
+            f"**{current_deudor}** debe ese diferencial."
         )
 
     st.markdown("### 💸 Registrar pago o abono")
@@ -766,8 +784,8 @@ def render_estado_cuenta_y_pagos(
             key=f"fecha_pago_{key_prefix}",
         )
 
-        if deudor in (persona1, persona2):
-            idx_default = 0 if deudor == persona1 else 1
+        if current_deudor in (persona1, persona2):
+            idx_default = 0 if current_deudor == persona1 else 1
         else:
             idx_default = 0
 
@@ -802,12 +820,10 @@ def render_estado_cuenta_y_pagos(
 
         submitted = st.form_submit_button("Registrar pago")
         if submitted:
-            if deuda_original <= 0:
-                st.error("Actualmente no hay deuda pendiente en esta categoría.")
-            elif saldo_pendiente <= 0:
-                st.error("La deuda ya fue saldada completamente. No hay monto pendiente.")
+            if current_monto_neto < 1:
+                st.error("No hay saldo pendiente entre ambas personas en esta categoría.")
             else:
-                monto = saldo_pendiente if tipo_pago == "Pagar todo" else monto_input
+                monto = current_monto_neto if tipo_pago == "Pagar todo" else monto_input
                 if monto <= 0:
                     st.error("El monto debe ser mayor a cero.")
                 else:
