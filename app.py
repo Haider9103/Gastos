@@ -933,14 +933,6 @@ def render_resumen_categoria(
 
     balance_p1, resumen = calcular_balance(df_cat, df_pagos_cat, persona1, persona2)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total gastado", formatear_cop(resumen["total_gastado"]))
-    with col2:
-        st.metric(f"Pagado por {persona1}", formatear_cop(resumen["pago_p1"]))
-    with col3:
-        st.metric(f"Pagado por {persona2}", formatear_cop(resumen["pago_p2"]))
-
     mostrar_mensaje_balance(balance_p1, persona1, persona2)
 
     # Extracto y abonos para esta categoría
