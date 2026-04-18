@@ -676,8 +676,9 @@ def calcular_balance(
 
         # saldo y porcentaje pagado
     if abs(balance_sin_abonos) >= 1 and deuda_original > 0:
-        saldo_pendiente = max(deuda_original - abonos_aplicados, 0.0)
-        porcentaje_pagado = min((abonos_aplicados / deuda_original) * 100.0, 100.0)
+        saldo_pendiente = abs(balance_p1)
+        pagado_neto = max(deuda_original - saldo_pendiente, 0.0)
+        porcentaje_pagado = min((pagado_neto / deuda_original) * 100.0, 100.0)
     else:
         saldo_pendiente = 0.0
         porcentaje_pagado = 0.0
